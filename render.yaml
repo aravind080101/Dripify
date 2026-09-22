@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: dripify-mcp
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: DRIPIFY_API_KEY
+        sync: false
+      - key: MCP_BEARER_TOKEN
+        sync: false
+      - key: WEBHOOK_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dripify-webhooks
+          property: connectionString
+databases:
+  - name: dripify-webhooks
+    plan: basic-256mb
