@@ -592,14 +592,16 @@ async def dripify_get_conversation(
 
 @mcp.tool()
 async def dripify_get_stored_webhook_events(
-    account: str,
     lead_id: int | None = None,
     linkedin_url: str | None = None,
-    limit: int = "account1"
+    limit: int = 25,
+    account: str = "account1"
 ) -> list[dict]:
     """
     Retrieve stored webhook events for a lead
     from a particular Dripify account.
+
+    Defaults to account1 when account is not specified.
     """
 
     validate_account(account)
