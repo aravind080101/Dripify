@@ -1,8 +1,3 @@
-"""Dripify Open API MCP with optional raw reply-webhook archive."""
-
-import json
-import os
-import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -21,7 +16,10 @@ from starlette.routing import Mount, Route
 
 BASE = "https://api.dripify.com/v1/open-api"
 
-API_KEY = os.environ.get("DRIPIFY_API_KEY", "")
+DRIPIFY_ACCOUNTS = {
+    "account_1": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_1", ""),
+    "account_2": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_2", ""),
+}
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -53,37 +51,30 @@ async def call(
     method: str,
     path: str,
     *,
+    account: str,
     params: dict | None = None,
     body: dict | None = None
 ) -> Any:
-    """
-    Call the Dripify Open API.
-    """
-
-    if not API_KEY:
-        raise RuntimeError("DRIPIFY_API_KEY is missing")
+    """Call Dripify Open API using the selected account."""
+    api_key = DRIPIFY_ACCOUNTS.get(account)
+    if account not in DRIPIFY_ACCOUNTS:
+        raise ValueError(f"Unknown account: {account}. Use account_1 or account_2.")
+    if not api_key:
+        raise RuntimeError(f"API key for {account} is not configured")
 
     async with httpx.AsyncClient(timeout=25) as client:
-
         response = await client.request(
             method,
             BASE + path,
-            headers={
-                "X-Api-Key": API_KEY
-            },
+            headers={"X-Api-Key": api_key},
             params=params,
             json=body
         )
-
     if response.is_error:
-        # Avoid returning upstream response bodies because
-        # they could contain personal information.
-
         raise RuntimeError(
             f"Dripify returned HTTP {response.status_code}; "
             f"retry-after={response.headers.get('Retry-After', 'n/a')}"
         )
-
     return response.json()
 
 
@@ -93,6 +84,7 @@ async def call(
 
 @mcp.tool()
 async def dripify_list_campaigns(
+    account: str,
     limit: int = 25,
     cursor: str | None = None
 ) -> dict:
@@ -105,12 +97,14 @@ async def dripify_list_campaigns(
     return await call(
         "GET",
         "/campaigns",
+        account=account,
         params=page(limit, cursor)
     )
 
 
 @mcp.tool()
 async def dripify_list_campaign_lead_lists(
+    account: str,
     campaign_id: int,
     limit: int = 25,
     cursor: str | None = None
@@ -122,12 +116,14 @@ async def dripify_list_campaign_lead_lists(
     return await call(
         "GET",
         f"/campaigns/{campaign_id}/lead-lists",
+        account=account,
         params=page(limit, cursor)
     )
 
 
 @mcp.tool()
 async def dripify_get_campaign_statistics(
+    account: str,
     campaign_id: int
 ) -> dict:
     """
@@ -138,6 +134,7 @@ async def dripify_get_campaign_statistics(
     return await call(
         "GET",
         f"/campaigns/{campaign_id}/statistics"
+        account=account,
     )
 
 
@@ -147,6 +144,7 @@ async def dripify_get_campaign_statistics(
 
 @mcp.tool()
 async def dripify_list_leads(
+    account: str,
     limit: int = 25,
     cursor: str | None = None,
     campaign_id: int | None = None,
@@ -190,12 +188,14 @@ async def dripify_list_leads(
     return await call(
         "GET",
         "/leads",
+        account=account,
         params=params
     )
 
 
 @mcp.tool()
 async def dripify_get_lead(
+    account: str,
     lead_id: int
 ) -> dict:
     """
@@ -205,11 +205,13 @@ async def dripify_get_lead(
     return await call(
         "GET",
         f"/leads/{lead_id}"
+        account=account,
     )
 
 
 @mcp.tool()
 async def dripify_get_lead_activity(
+    account: str,
     lead_id: int,
     limit: int = 25,
     cursor: str | None = None
@@ -224,12 +226,14 @@ async def dripify_get_lead_activity(
     return await call(
         "GET",
         f"/leads/{lead_id}/activity",
+        account=account,
         params=page(limit, cursor)
     )
 
 
 @mcp.tool()
 async def dripify_search_leads(
+    account: str,
     email: str | None = None,
     linkedin_url: str | None = None
 ) -> list:
@@ -252,12 +256,14 @@ async def dripify_search_leads(
     return await call(
         "POST",
         "/leads/search",
+        account=account,
         body=body
     )
 
 
 @mcp.tool()
 async def dripify_upload_leads(
+    account: str,
     campaign_id: int,
     leads: list[dict[str, str]],
     name: str | None = None
@@ -322,6 +328,7 @@ async def dripify_upload_leads(
     return await call(
         "POST",
         f"/campaigns/{campaign_id}/leads",
+        account=account,
         body=body
     )
 
@@ -332,6 +339,7 @@ async def dripify_upload_leads(
 
 @mcp.tool()
 async def dripify_list_teams(
+    account: str,
     limit: int = 25,
     cursor: str | None = None
 ) -> dict:
@@ -342,12 +350,14 @@ async def dripify_list_teams(
     return await call(
         "GET",
         "/teams",
+        account=account,
         params=page(limit, cursor)
     )
 
 
 @mcp.tool()
 async def dripify_list_team_members(
+    account: str,
     team_id: int,
     limit: int = 25,
     cursor: str | None = None
@@ -361,6 +371,7 @@ async def dripify_list_team_members(
     return await call(
         "GET",
         f"/teams/{team_id}/members",
+        account=account,
         params=page(limit, cursor)
     )
 
@@ -680,9 +691,9 @@ mcp_app = mcp.http_app(
 @asynccontextmanager
 async def lifespan(app):
 
-    if not API_KEY:
+    if not any(DRIPIFY_ACCOUNTS.values()):
         raise RuntimeError(
-            "Set DRIPIFY_API_KEY"
+            "Set DRIPIFY_API_KEY_ACCOUNT_1 and/or DRIPIFY_API_KEY_ACCOUNT_2"
         )
 
     init_db()
