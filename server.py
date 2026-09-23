@@ -1,3 +1,8 @@
+"""Dripify Open API MCP - multi-account support with webhook archive."""
+
+import json
+import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,7 +16,7 @@ from starlette.routing import Mount, Route
 
 
 # ============================================================
-# Configuration
+# CONFIGURATION
 # ============================================================
 
 BASE = "https://api.dripify.com/v1/open-api"
@@ -20,24 +25,23 @@ DRIPIFY_ACCOUNTS = {
     "account_1": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_1", ""),
     "account_2": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_2", ""),
 }
+
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 
 # ============================================================
-# MCP Server
+# MCP SERVER
 # ============================================================
 
 mcp = FastMCP("Dripify Open API")
 
 
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 
 def page(limit: int, cursor: str | None) -> dict:
-    """Build pagination parameters."""
-
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
 
@@ -45,6 +49,27 @@ def page(limit: int, cursor: str | None) -> dict:
         "limit": limit,
         **({"cursor": cursor} if cursor else {})
     }
+
+
+def validate_account(account: str) -> str:
+    """
+    Validate the requested Dripify account and return its API key.
+    """
+
+    if account not in DRIPIFY_ACCOUNTS:
+        raise ValueError(
+            f"Unknown account '{account}'. "
+            "Use 'account_1' or 'account_2'."
+        )
+
+    api_key = DRIPIFY_ACCOUNTS[account]
+
+    if not api_key:
+        raise RuntimeError(
+            f"API key for '{account}' is not configured."
+        )
+
+    return api_key
 
 
 async def call(
@@ -55,27 +80,54 @@ async def call(
     params: dict | None = None,
     body: dict | None = None
 ) -> Any:
-    """Call Dripify Open API using the selected account."""
-    api_key = DRIPIFY_ACCOUNTS.get(account)
-    if account not in DRIPIFY_ACCOUNTS:
-        raise ValueError(f"Unknown account: {account}. Use account_1 or account_2.")
-    if not api_key:
-        raise RuntimeError(f"API key for {account} is not configured")
+    """
+    Call Dripify Open API using the selected account.
+    """
+
+    api_key = validate_account(account)
 
     async with httpx.AsyncClient(timeout=25) as client:
         response = await client.request(
             method,
             BASE + path,
-            headers={"X-Api-Key": api_key},
+            headers={
+                "X-Api-Key": api_key
+            },
             params=params,
             json=body
         )
+
     if response.is_error:
         raise RuntimeError(
             f"Dripify returned HTTP {response.status_code}; "
-            f"retry-after={response.headers.get('Retry-After', 'n/a')}"
+            f"retry-after="
+            f"{response.headers.get('Retry-After', 'n/a')}"
         )
+
     return response.json()
+
+
+# ============================================================
+# ACCOUNT TOOLS
+# ============================================================
+
+@mcp.tool()
+async def dripify_list_accounts() -> dict:
+    """
+    List configured Dripify account aliases.
+
+    API keys are never returned.
+    """
+
+    return {
+        "accounts": [
+            {
+                "account": account,
+                "configured": bool(api_key)
+            }
+            for account, api_key in DRIPIFY_ACCOUNTS.items()
+        ]
+    }
 
 
 # ============================================================
@@ -89,9 +141,7 @@ async def dripify_list_campaigns(
     cursor: str | None = None
 ) -> dict:
     """
-    List Dripify campaigns.
-
-    Pass nextCursor from the response to fetch another page.
+    List campaigns for a Dripify account.
     """
 
     return await call(
@@ -110,7 +160,7 @@ async def dripify_list_campaign_lead_lists(
     cursor: str | None = None
 ) -> dict:
     """
-    List lead lists belonging to a Dripify campaign.
+    List lead lists inside a campaign.
     """
 
     return await call(
@@ -127,14 +177,14 @@ async def dripify_get_campaign_statistics(
     campaign_id: int
 ) -> dict:
     """
-    Get campaign statistics including counts,
-    acceptance rates and reply rates.
+    Get campaign statistics including acceptance
+    and reply information.
     """
 
     return await call(
         "GET",
-        f"/campaigns/{campaign_id}/statistics"
-        account=account,
+        f"/campaigns/{campaign_id}/statistics",
+        account=account
     )
 
 
@@ -152,14 +202,12 @@ async def dripify_list_leads(
     status: str | None = None
 ) -> dict:
     """
-    List Dripify leads.
+    List leads for a Dripify account.
 
-    Leads can optionally be filtered by:
-    - campaign
-    - lead list
-    - processing status
-
-    lead_list_id takes precedence when supplied.
+    Optional filters:
+    - campaign_id
+    - lead_list_id
+    - status
     """
 
     allowed = {
@@ -199,13 +247,13 @@ async def dripify_get_lead(
     lead_id: int
 ) -> dict:
     """
-    Get information about a specific Dripify lead.
+    Get information about a specific lead.
     """
 
     return await call(
         "GET",
-        f"/leads/{lead_id}"
-        account=account,
+        f"/leads/{lead_id}",
+        account=account
     )
 
 
@@ -217,10 +265,10 @@ async def dripify_get_lead_activity(
     cursor: str | None = None
 ) -> dict:
     """
-    Retrieve timeline/activity events for a lead.
+    Retrieve activity/timeline events for a lead.
 
-    This endpoint does not necessarily contain
-    full message bodies.
+    This does not necessarily contain complete
+    conversation message bodies.
     """
 
     return await call(
@@ -238,9 +286,7 @@ async def dripify_search_leads(
     linkedin_url: str | None = None
 ) -> list:
     """
-    Search for leads using email or LinkedIn URL.
-
-    At least one search value must be provided.
+    Search leads by email or LinkedIn URL.
     """
 
     if not email and not linkedin_url:
@@ -250,7 +296,11 @@ async def dripify_search_leads(
 
     body = {
         **({"email": email} if email else {}),
-        **({"linkedinUrl": linkedin_url} if linkedin_url else {})
+        **(
+            {"linkedinUrl": linkedin_url}
+            if linkedin_url
+            else {}
+        )
     }
 
     return await call(
@@ -271,20 +321,19 @@ async def dripify_upload_leads(
     """
     Add leads to an EXISTING Dripify campaign.
 
-    Creates a new lead list inside the campaign.
+    This creates a new lead list inside the campaign.
 
-    Each lead must contain exactly ONE of:
+    Each lead must contain exactly one:
 
     {"linkedinUrl": "https://linkedin.com/in/..."}
-    
+
     OR
 
     {"publicId": "linkedin-public-id"}
 
-    Maximum: 1000 leads per request.
+    Maximum 1000 leads.
 
-    WARNING:
-    This operation modifies Dripify data.
+    This operation changes Dripify data.
     """
 
     if not 1 <= len(leads) <= 1000:
@@ -344,7 +393,7 @@ async def dripify_list_teams(
     cursor: str | None = None
 ) -> dict:
     """
-    List teams that the API-key owner belongs to.
+    List teams associated with the selected Dripify account.
     """
 
     return await call(
@@ -364,8 +413,6 @@ async def dripify_list_team_members(
 ) -> dict:
     """
     List members of a Dripify team.
-
-    Requires the appropriate owner/manager permissions.
     """
 
     return await call(
@@ -375,22 +422,95 @@ async def dripify_list_team_members(
         params=page(limit, cursor)
     )
 
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def connection():
+    """
+    Connect to PostgreSQL.
+    """
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is required for webhook storage"
+        )
+
+    return psycopg.connect(DATABASE_URL)
+
+
+def init_db():
+    """
+    Create webhook storage table if PostgreSQL is configured.
+    """
+
+    if not DATABASE_URL:
+        return
+
+    with connection() as db:
+
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS
+            dripify_webhook_events (
+                id BIGSERIAL PRIMARY KEY,
+                received_at TIMESTAMPTZ
+                    NOT NULL DEFAULT now(),
+                account TEXT,
+                payload JSONB NOT NULL
+            )
+            """
+        )
+
+        # Allows an existing table from the previous
+        # single-account version to be upgraded safely.
+        db.execute(
+            """
+            ALTER TABLE dripify_webhook_events
+            ADD COLUMN IF NOT EXISTS account TEXT
+            """
+        )
+
+        db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            dripify_events_payload_gin
+            ON dripify_webhook_events
+            USING GIN(payload)
+            """
+        )
+
+        db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            dripify_events_account_idx
+            ON dripify_webhook_events(account)
+            """
+        )
+
+
+# ============================================================
+# STORED CONVERSATION TOOLS
+# ============================================================
+
 @mcp.tool()
 async def dripify_get_conversation(
+    account: str,
     lead_id: int | None = None,
     linkedin_url: str | None = None,
     limit: int = 10
 ) -> dict:
     """
-    Get the latest stored Dripify conversation for a lead.
+    Get stored webhook conversation data for a lead.
 
-    Conversation data comes from Dripify's
-    'After LinkedIn reply is received' webhook.
+    Provide either lead_id or linkedin_url.
 
-    Provide either:
-    - lead_id
-    - linkedin_url
+    Data is available only when corresponding webhook
+    events have previously been received and stored.
     """
+
+    validate_account(account)
 
     if lead_id is None and not linkedin_url:
         raise ValueError(
@@ -428,11 +548,13 @@ async def dripify_get_conversation(
                 received_at,
                 payload
             FROM dripify_webhook_events
-            WHERE payload::text ILIKE %s
+            WHERE account = %s
+              AND payload::text ILIKE %s
             ORDER BY received_at DESC
             LIMIT %s
             """,
             (
+                account,
                 "%" + escaped + "%",
                 limit
             )
@@ -441,10 +563,13 @@ async def dripify_get_conversation(
     if not rows:
         return {
             "found": False,
+            "account": account,
             "lead_id": lead_id,
             "linkedin_url": linkedin_url,
-            "message":
-                "No stored conversation found for this lead."
+            "message": (
+                "No stored conversation found "
+                "for this lead."
+            )
         }
 
     events = []
@@ -458,81 +583,35 @@ async def dripify_get_conversation(
 
     return {
         "found": True,
+        "account": account,
         "lead_id": lead_id,
         "linkedin_url": linkedin_url,
         "events": events
     }
-# ============================================================
-# DATABASE
-# ============================================================
 
-def connection():
-    """
-    Connect to PostgreSQL used for webhook storage.
-    """
-
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL is required for webhook storage"
-        )
-
-    return psycopg.connect(DATABASE_URL)
-
-
-def init_db():
-    """
-    Create webhook event storage when DATABASE_URL exists.
-    """
-
-    if DATABASE_URL:
-
-        with connection() as db:
-
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dripify_webhook_events (
-                    id BIGSERIAL PRIMARY KEY,
-                    received_at TIMESTAMPTZ
-                        NOT NULL DEFAULT now(),
-                    payload JSONB NOT NULL
-                )
-                """
-            )
-
-            db.execute(
-                """
-                CREATE INDEX IF NOT EXISTS
-                dripify_events_payload_gin
-                ON dripify_webhook_events
-                USING GIN(payload)
-                """
-            )
-
-
-# ============================================================
-# WEBHOOK MCP TOOL
-# ============================================================
 
 @mcp.tool()
 async def dripify_get_stored_webhook_events(
+    account: str,
     lead_id: int | None = None,
     linkedin_url: str | None = None,
     limit: int = 25
 ) -> list[dict]:
     """
-    Retrieve stored Dripify webhook snapshots.
-
-    Requires either:
-    - lead_id
-    - linkedin_url
+    Retrieve stored webhook events for a lead
+    from a particular Dripify account.
     """
 
-    if not (
-        lead_id is not None
-        or linkedin_url
-    ):
+    validate_account(account)
+
+    if lead_id is None and not linkedin_url:
         raise ValueError(
             "Provide lead_id or linkedin_url"
+        )
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is required for webhook storage"
         )
 
     if not 1 <= limit <= 100:
@@ -546,6 +625,12 @@ async def dripify_get_stored_webhook_events(
         else linkedin_url
     )
 
+    escaped = (
+        needle
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
     with connection() as db:
 
         rows = db.execute(
@@ -555,16 +640,14 @@ async def dripify_get_stored_webhook_events(
                 received_at,
                 payload
             FROM dripify_webhook_events
-            WHERE payload::text ILIKE %s
+            WHERE account = %s
+              AND payload::text ILIKE %s
             ORDER BY id DESC
             LIMIT %s
             """,
             (
-                "%"
-                + needle
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-                + "%",
+                account,
+                "%" + escaped + "%",
                 limit
             )
         ).fetchall()
@@ -580,42 +663,59 @@ async def dripify_get_stored_webhook_events(
 
 
 # ============================================================
-# HTTP HEALTH CHECK
+# HEALTH ENDPOINT
 # ============================================================
 
-async def health(
-    request: Request
-):
+async def health(request: Request):
     """
-    Render health-check endpoint.
+    Render health check.
     """
 
-    return JSONResponse(
-        {
-            "ok": True,
-            "service": "dripify-mcp"
-        }
-    )
+    configured_accounts = [
+        account
+        for account, api_key
+        in DRIPIFY_ACCOUNTS.items()
+        if api_key
+    ]
+
+    return JSONResponse({
+        "ok": True,
+        "service": "dripify-mcp",
+        "configured_accounts": configured_accounts,
+        "database_configured": bool(DATABASE_URL)
+    })
 
 
 # ============================================================
-# DRIPIFY WEBHOOK RECEIVER
+# DRIPIFY WEBHOOK
 # ============================================================
 
-async def webhook(
-    request: Request
-):
+async def webhook(request: Request):
     """
     Receive Dripify webhook events.
 
-    This endpoint still uses WEBHOOK_TOKEN because webhook
-    requests are separate from MCP authentication.
+    URL format:
+
+    /webhooks/dripify/{account}/{token}
+
+    Example:
+
+    /webhooks/dripify/account_1/SECRET
     """
+
+    account = request.path_params["account"]
+    token = request.path_params["token"]
+
+    if account not in DRIPIFY_ACCOUNTS:
+        return JSONResponse(
+            {"error": "unknown account"},
+            status_code=404
+        )
 
     if (
         not WEBHOOK_TOKEN
         or not secrets.compare_digest(
-            request.path_params["token"],
+            token,
             WEBHOOK_TOKEN
         )
     ):
@@ -647,11 +747,18 @@ async def webhook(
             db.execute(
                 """
                 INSERT INTO
-                dripify_webhook_events(payload)
-                VALUES (%s::jsonb)
+                dripify_webhook_events(
+                    account,
+                    payload
+                )
+                VALUES (
+                    %s,
+                    %s::jsonb
+                )
                 """,
                 (
-                    json.dumps(payload),
+                    account,
+                    json.dumps(payload)
                 )
             )
 
@@ -668,13 +775,14 @@ async def webhook(
             status_code=400
         )
 
-    return JSONResponse(
-        {"stored": True}
-    )
+    return JSONResponse({
+        "stored": True,
+        "account": account
+    })
 
 
 # ============================================================
-# MCP HTTP APPLICATION
+# MCP HTTP APP
 # ============================================================
 
 mcp_app = mcp.http_app(
@@ -685,7 +793,7 @@ mcp_app = mcp.http_app(
 
 
 # ============================================================
-# APPLICATION LIFESPAN
+# APPLICATION STARTUP
 # ============================================================
 
 @asynccontextmanager
@@ -693,7 +801,8 @@ async def lifespan(app):
 
     if not any(DRIPIFY_ACCOUNTS.values()):
         raise RuntimeError(
-            "Set DRIPIFY_API_KEY_ACCOUNT_1 and/or DRIPIFY_API_KEY_ACCOUNT_2"
+            "Set DRIPIFY_API_KEY_ACCOUNT_1 "
+            "and/or DRIPIFY_API_KEY_ACCOUNT_2"
         )
 
     init_db()
@@ -703,18 +812,19 @@ async def lifespan(app):
 
 
 # ============================================================
-# STARLETTE APPLICATION
+# STARLETTE APP
 # ============================================================
 
 app = Starlette(
     routes=[
         Route(
             "/health",
-            health
+            health,
+            methods=["GET"]
         ),
 
         Route(
-            "/webhooks/dripify/{token}",
+            "/webhooks/dripify/{account}/{token}",
             webhook,
             methods=["POST"]
         ),
