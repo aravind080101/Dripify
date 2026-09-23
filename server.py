@@ -595,7 +595,7 @@ async def dripify_get_stored_webhook_events(
     account: str,
     lead_id: int | None = None,
     linkedin_url: str | None = None,
-    limit: int = 25
+    limit: int = "account1"
 ) -> list[dict]:
     """
     Retrieve stored webhook events for a lead
