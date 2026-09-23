@@ -709,7 +709,7 @@ app = Starlette(
         ),
 
         Mount(
-            "/mcp",
+            "/",
             app=mcp_app
         )
     ],
