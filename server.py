@@ -24,6 +24,7 @@ BASE = "https://api.dripify.com/v1/open-api"
 DRIPIFY_ACCOUNTS = {
     "account_1": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_1", ""),
     "account_2": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_2", ""),
+    "account_3": os.environ.get("DRIPIFY_API_KEY_ACCOUNT_3", ""),
 }
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
@@ -59,7 +60,7 @@ def validate_account(account: str) -> str:
     if account not in DRIPIFY_ACCOUNTS:
         raise ValueError(
             f"Unknown account '{account}'. "
-            "Use 'account_1' or 'account_2'."
+            f"Use one of: {', '.join(DRIPIFY_ACCOUNTS)}."
         )
 
     api_key = DRIPIFY_ACCOUNTS[account]
@@ -595,13 +596,13 @@ async def dripify_get_stored_webhook_events(
     lead_id: int | None = None,
     linkedin_url: str | None = None,
     limit: int = 25,
-    account: str = "account1"
+    account: str = "account_1"
 ) -> list[dict]:
     """
     Retrieve stored webhook events for a lead
     from a particular Dripify account.
 
-    Defaults to account1 when account is not specified.
+    Defaults to account_1 when account is not specified.
     """
 
     validate_account(account)
@@ -803,8 +804,8 @@ async def lifespan(app):
 
     if not any(DRIPIFY_ACCOUNTS.values()):
         raise RuntimeError(
-            "Set DRIPIFY_API_KEY_ACCOUNT_1 "
-            "and/or DRIPIFY_API_KEY_ACCOUNT_2"
+            "Set at least one of DRIPIFY_API_KEY_ACCOUNT_1, "
+            "DRIPIFY_API_KEY_ACCOUNT_2 or DRIPIFY_API_KEY_ACCOUNT_3"
         )
 
     init_db()
